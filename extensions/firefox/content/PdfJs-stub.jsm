@@ -12,7 +12,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* eslint max-len: ["error", 100] */
 
 "use strict";
 
@@ -22,5 +21,5 @@
 var EXPORTED_SYMBOLS = ["PdfJs"];
 
 var PdfJs = {
-  init: function PdfJs_init() {}
+  init: function PdfJs_init() {},
 };

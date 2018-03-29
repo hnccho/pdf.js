@@ -12,18 +12,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals Components, Services, XPCOMUtils, PdfjsChromeUtils,
-           PdfjsContentUtils, PdfStreamConverter */
 
 "use strict";
 
 var EXPORTED_SYMBOLS = ["PdfJs"];
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cr = Components.results;
 const Cm = Components.manager;
-const Cu = Components.utils;
 
 const PREF_PREFIX = "pdfjs";
 const PREF_DISABLED = PREF_PREFIX + ".disabled";
@@ -32,13 +26,17 @@ const PREF_PREVIOUS_ACTION = PREF_PREFIX + ".previousHandler.preferredAction";
 const PREF_PREVIOUS_ASK = PREF_PREFIX +
                           ".previousHandler.alwaysAskBeforeHandling";
 const PREF_DISABLED_PLUGIN_TYPES = "plugin.disable_full_page_plugin_for_types";
+const PREF_ENABLED_CACHE_STATE = PREF_PREFIX + ".enabledCache.state";
+const PREF_ENABLED_CACHE_INITIALIZED = PREF_PREFIX +
+                                       ".enabledCache.initialized";
+const PREF_APP_UPDATE_POSTUPDATE = "app.update.postupdate";
 const TOPIC_PDFJS_HANDLER_CHANGED = "pdfjs:handlerChanged";
 const TOPIC_PLUGINS_LIST_UPDATED = "plugins-list-updated";
 const TOPIC_PLUGIN_INFO_UPDATED = "plugin-info-updated";
 const PDF_CONTENT_TYPE = "application/pdf";
 
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
+ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
+ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 var Svc = {};
 XPCOMUtils.defineLazyServiceGetter(Svc, "mime",
@@ -47,10 +45,12 @@ XPCOMUtils.defineLazyServiceGetter(Svc, "mime",
 XPCOMUtils.defineLazyServiceGetter(Svc, "pluginHost",
                                    "@mozilla.org/plugin/host;1",
                                    "nsIPluginHost");
-XPCOMUtils.defineLazyModuleGetter(this, "PdfjsChromeUtils",
-                                  "resource://pdf.js/PdfjsChromeUtils.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "PdfjsContentUtils",
-                                  "resource://pdf.js/PdfjsContentUtils.jsm");
+ChromeUtils.defineModuleGetter(this, "PdfjsChromeUtils",
+                               "resource://pdf.js/PdfjsChromeUtils.jsm");
+ChromeUtils.defineModuleGetter(this, "PdfjsContentUtils",
+                               "resource://pdf.js/PdfjsContentUtils.jsm");
+ChromeUtils.defineModuleGetter(this, "PdfJsDefaultPreferences",
+  "resource://pdf.js/PdfJsDefaultPreferences.jsm");
 
 function getBoolPref(aPref, aDefaultValue) {
   try {
@@ -69,23 +69,18 @@ function getIntPref(aPref, aDefaultValue) {
 }
 
 function isDefaultHandler() {
- if (Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_CONTENT) {
-   return PdfjsContentUtils.isDefaultHandlerApp();
- }
- return PdfjsChromeUtils.isDefaultHandlerApp();
+  if (Services.appinfo.processType !== Services.appinfo.PROCESS_TYPE_DEFAULT) {
+    throw new Error("isDefaultHandler should only get called in the parent " +
+                    "process.");
+  }
+  return PdfjsChromeUtils.isDefaultHandlerApp();
 }
 
 function initializeDefaultPreferences() {
-  var DEFAULT_PREFERENCES =
-//#include ../../../web/default_preferences.json
-//#if false
-    "end of DEFAULT_PREFERENCES";
-//#endif
-
   var defaultBranch = Services.prefs.getDefaultBranch(PREF_PREFIX + ".");
   var defaultValue;
-  for (var key in DEFAULT_PREFERENCES) {
-    defaultValue = DEFAULT_PREFERENCES[key];
+  for (var key in PdfJsDefaultPreferences) {
+    defaultValue = PdfJsDefaultPreferences[key];
     switch (typeof defaultValue) {
       case "boolean":
         defaultBranch.setBoolPref(key, defaultValue);
@@ -128,7 +123,7 @@ Factory.prototype = {
       registrar.unregisterFactory(this._classID2, this._factory);
     }
     this._factory = null;
-  }
+  },
 };
 
 var PdfJs = {
@@ -162,17 +157,17 @@ var PdfJs = {
 
     // Listen for when pdf.js is completely disabled or a different pdf handler
     // is chosen.
-    Services.prefs.addObserver(PREF_DISABLED, this, false);
-    Services.prefs.addObserver(PREF_DISABLED_PLUGIN_TYPES, this, false);
-    Services.obs.addObserver(this, TOPIC_PDFJS_HANDLER_CHANGED, false);
-    Services.obs.addObserver(this, TOPIC_PLUGINS_LIST_UPDATED, false);
-    Services.obs.addObserver(this, TOPIC_PLUGIN_INFO_UPDATED, false);
+    Services.prefs.addObserver(PREF_DISABLED, this);
+    Services.prefs.addObserver(PREF_DISABLED_PLUGIN_TYPES, this);
+    Services.obs.addObserver(this, TOPIC_PDFJS_HANDLER_CHANGED);
+    Services.obs.addObserver(this, TOPIC_PLUGINS_LIST_UPDATED);
+    Services.obs.addObserver(this, TOPIC_PLUGIN_INFO_UPDATED);
 
     initializeDefaultPreferences();
   },
 
   updateRegistration: function updateRegistration() {
-    if (this.enabled) {
+    if (this.checkEnabled()) {
       this.ensureRegistered();
     } else {
       this.ensureUnregistered();
@@ -238,7 +233,7 @@ var PdfJs = {
       types = stringTypes.split(",");
     }
 
-    if (types.indexOf(PDF_CONTENT_TYPE) === -1) {
+    if (!types.includes(PDF_CONTENT_TYPE)) {
       types.push(PDF_CONTENT_TYPE);
     }
     prefs.setCharPref(PREF_DISABLED_PLUGIN_TYPES, types.join(","));
@@ -251,23 +246,7 @@ var PdfJs = {
                                         false);
   },
 
-  // nsIObserver
-  observe: function observe(aSubject, aTopic, aData) {
-    this.updateRegistration();
-    if (Services.appinfo.processType ===
-        Services.appinfo.PROCESS_TYPE_DEFAULT) {
-      let jsm = "resource://pdf.js/PdfjsChromeUtils.jsm";
-      let PdfjsChromeUtils = Components.utils.import(jsm, {}).PdfjsChromeUtils;
-      PdfjsChromeUtils.notifyChildOfSettingsChange();
-    }
-  },
-
-  /**
-   * pdf.js is only enabled if it is both selected as the pdf viewer and if the
-   * global switch enabling it is true.
-   * @return {boolean} Whether or not it's enabled.
-   */
-  get enabled() {
+  _isEnabled: function _isEnabled() {
     var disabled = getBoolPref(PREF_DISABLED, true);
     if (disabled) {
       return false;
@@ -282,7 +261,7 @@ var PdfJs = {
     if (Services.prefs.prefHasUserValue(PREF_DISABLED_PLUGIN_TYPES)) {
       let disabledPluginTypes =
         Services.prefs.getCharPref(PREF_DISABLED_PLUGIN_TYPES).split(",");
-      if (disabledPluginTypes.indexOf(PDF_CONTENT_TYPE) >= 0) {
+      if (disabledPluginTypes.includes(PDF_CONTENT_TYPE)) {
         return true;
       }
     }
@@ -307,12 +286,53 @@ var PdfJs = {
     return !enabledPluginFound;
   },
 
+  checkEnabled: function checkEnabled() {
+    let isEnabled = this._isEnabled();
+    // This will be updated any time we observe a dependency changing, since
+    // updateRegistration internally calls enabled.
+    Services.prefs.setBoolPref(PREF_ENABLED_CACHE_STATE, isEnabled);
+    return isEnabled;
+  },
+
+  // nsIObserver
+  observe: function observe(aSubject, aTopic, aData) {
+    if (Services.appinfo.processType !==
+        Services.appinfo.PROCESS_TYPE_DEFAULT) {
+      throw new Error("Only the parent process should be observing PDF " +
+                      "handler changes.");
+    }
+
+    this.updateRegistration();
+    let jsm = "resource://pdf.js/PdfjsChromeUtils.jsm";
+    let PdfjsChromeUtils = ChromeUtils.import(jsm, {}).PdfjsChromeUtils;
+    PdfjsChromeUtils.notifyChildOfSettingsChange(this.enabled);
+  },
+
+  /**
+   * pdf.js is only enabled if it is both selected as the pdf viewer and if the
+   * global switch enabling it is true.
+   * @return {boolean} Whether or not it's enabled.
+   */
+  get enabled() {
+    if (!Services.prefs.getBoolPref(PREF_ENABLED_CACHE_INITIALIZED, false)) {
+      // If we just updated, and the cache hasn't been initialized, then we
+      // can't assume a default state, and need to synchronously initialize
+      // PdfJs
+      if (Services.prefs.prefHasUserValue(PREF_APP_UPDATE_POSTUPDATE)) {
+        this.checkEnabled();
+      }
+
+      Services.prefs.setBoolPref(PREF_ENABLED_CACHE_INITIALIZED, true);
+    }
+    return Services.prefs.getBoolPref(PREF_ENABLED_CACHE_STATE, true);
+  },
+
   ensureRegistered: function ensureRegistered() {
     if (this._registered) {
       return;
     }
     this._pdfStreamConverterFactory = new Factory();
-    Cu.import("resource://pdf.js/PdfStreamConverter.jsm");
+    ChromeUtils.import("resource://pdf.js/PdfStreamConverter.jsm");
     this._pdfStreamConverterFactory.register(PdfStreamConverter);
 
     this._registered = true;
@@ -327,5 +347,5 @@ var PdfJs = {
     delete this._pdfStreamConverterFactory;
 
     this._registered = false;
-  }
+  },
 };

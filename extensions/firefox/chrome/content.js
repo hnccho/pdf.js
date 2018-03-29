@@ -12,22 +12,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/* globals Components, Services, XPCOMUtils, PdfjsContentUtils,
-           PdfjsContentUtils, PdfStreamConverter, addMessageListener */
+/* eslint-env mozilla/frame-script */
 
 "use strict";
 
 (function contentScriptClosure() {
   // we need to use closure here -- we are running in the global context
 
-  const Cc = Components.classes;
-  const Ci = Components.interfaces;
   const Cm = Components.manager;
-  const Cu = Components.utils;
-  const Cr = Components.results;
 
-  Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-  Cu.import("resource://gre/modules/Services.jsm");
+  ChromeUtils.import("resource://gre/modules/XPCOMUtils.jsm");
+  ChromeUtils.import("resource://gre/modules/Services.jsm");
 
   var isRemote = Services.appinfo.processType ===
     Services.appinfo.PROCESS_TYPE_CONTENT;
@@ -67,16 +62,16 @@
     lockFactory: function lockFactory(lock) {
       // No longer used as of gecko 1.7.
       throw Cr.NS_ERROR_NOT_IMPLEMENTED;
-    }
+    },
   };
 
   var pdfStreamConverterFactory = new Factory();
 
   function startup() {
-    Cu.import("resource://pdf.js/PdfjsContentUtils.jsm");
+    ChromeUtils.import("resource://pdf.js/PdfjsContentUtils.jsm");
     PdfjsContentUtils.init();
 
-    Cu.import("resource://pdf.js/PdfStreamConverter.jsm");
+    ChromeUtils.import("resource://pdf.js/PdfStreamConverter.jsm");
     pdfStreamConverterFactory.register(PdfStreamConverter);
   }
 
